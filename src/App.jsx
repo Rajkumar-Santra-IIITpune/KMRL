@@ -1142,43 +1142,62 @@ const DocumentViewModal = ({ doc, onClose, getStatusColor }) => {
             <p className="text-gray-700 leading-relaxed">{doc.summary}</p>
           </div>
 
-          {/* --- [NEW] Extracted Tables Section --- */}
+          {/* --- CORRECTED Extracted Tables Section --- */}
           {doc.tables_data && doc.tables_data.length > 0 && (
             <div>
-              <h4 className="font-semibold text-gray-800 mb-2">Extracted Tables</h4>
-              <div className="space-y-4">
-                {doc.tables_data.map((tableData, tableIndex) => (
-                  <div key={tableIndex} className="overflow-x-auto border rounded-lg">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        {tableData.length > 0 && (
-                          <tr>
-                            {tableData[0].map((headerCell, cellIndex) => (
-                              <th
-                                key={cellIndex}
-                                scope="col"
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                              >
-                                {headerCell}
-                              </th>
+              <h4 className="font-semibold text-gray-800 mb-2">IMPORTANT TABULAR DETAILS</h4>
+              <div className="space-y-6">
+                {/* The tables_data array now contains objects:
+                  [{ caption: "...", data: [[...], [...]] }, ...]
+                */}
+                {doc.tables_data.map((tableObject, tableIndex) => {
+                  // Ensure tableObject is valid and has data
+                  if (!tableObject || !tableObject.data || tableObject.data.length === 0) {
+                    return null;
+                  }
+                  
+                  const tableData = tableObject.data;
+                  const headerRow = tableData[0];
+                  const dataRows = tableData.slice(1);
+
+                  return (
+                    <div key={tableIndex} className="p-4 border border-gray-200 rounded-lg bg-white shadow-sm">
+                      {/* NEW: Display the descriptive caption */}
+                      <h5 className="text-md font-semibold text-gray-900 mb-3 border-b pb-1">
+                        {tableObject.caption || `Table ${tableIndex + 1}`}
+                      </h5>
+                      
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              {headerRow.map((headerCell, cellIndex) => (
+                                <th
+                                  key={cellIndex}
+                                  scope="col"
+                                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                                >
+                                  {headerCell}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {dataRows.map((row, rowIndex) => (
+                              <tr key={rowIndex} className="hover:bg-gray-50 transition-colors">
+                                {row.map((cell, cellIndex) => (
+                                  <td key={cellIndex} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
                             ))}
-                          </tr>
-                        )}
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {tableData.slice(1).map((row, rowIndex) => (
-                          <tr key={rowIndex}>
-                            {row.map((cell, cellIndex) => (
-                              <td key={cellIndex} className="px-6 py-4 whitespace-nowFrap text-sm text-gray-700">
-                                {cell}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
