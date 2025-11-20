@@ -36,7 +36,7 @@ documents_collection.create_index('tags')
 
 
 # -------------------------
-# [UPDATED] FILE EXTRACTION FUNCTION
+# FILE EXTRACTION FUNCTION
 # -------------------------
 
 def extract_text_from_file(file_storage):
@@ -44,37 +44,32 @@ def extract_text_from_file(file_storage):
     filename = file_storage.filename
     text = ""
     try:
+        # Reset file pointer to the beginning
+        file_storage.seek(0)
+        
         if filename.endswith('.pdf'):
-            # [FIX] Use a more advanced text extraction for PDFs to preserve layout
             pdf_document = fitz.open(stream=file_storage.read(), filetype="pdf")
             for page_num in range(len(pdf_document)):
                 page = pdf_document.load_page(page_num)
-                # Get text blocks with coordinates
                 blocks = page.get_text("blocks")
-                # Sort blocks by their vertical position, then horizontal
                 blocks.sort(key=lambda b: (b[1], b[0]))
                 for b in blocks:
-                    text += b[4] # b[4] is the text content
+                    text += b[4]
             pdf_document.close()
         elif filename.endswith('.docx'):
-            # [FIX] Read both paragraphs AND tables from DOCX
             doc = docx.Document(file_storage)
             
-            # First, get all paragraph text
             for para in doc.paragraphs:
                 text += para.text + "\n"
             
-            # Now, extract text from tables, formatting it so the AI can see it
             if doc.tables:
                 text += "\n\n--- Extracted Tables ---\n"
                 for table in doc.tables:
                     for row in table.rows:
-                        # Join cells with a clear separator
                         row_text = " | ".join(cell.text.strip() for cell in row.cells)
                         text += row_text + "\n"
-                    text += "------------------------\n" # Add separator after each table
+                    text += "------------------------\n"
         elif filename.endswith('.txt'):
-            # Read plain text file
             text = file_storage.read().decode('utf-8')
         else:
             return None # Unsupported file type
@@ -84,11 +79,11 @@ def extract_text_from_file(file_storage):
     return text
 
 # -------------------------
-# [CORRECTED] GEMINI AI ANALYSIS FUNCTION
+# [UPDATED] GEMINI AI ANALYSIS FUNCTION - NOW INCLUDES STATUS
 # -------------------------
 
 def analyze_document_with_gemini(text_content):
-    """Uses Gemini API to generate summary, tags, and other metadata."""
+    """Uses Gemini API to generate summary, tags, and other metadata, including a suggested status."""
     
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY not found. Returning mock data.")
@@ -99,15 +94,16 @@ def analyze_document_with_gemini(text_content):
             "department": "Unknown",
             "type": "Unknown",
             "language": "English",
-            "tables_data": [] # Corrected field name
+            "status": "review", # Mock status
+            "tables_data": []
         }
 
     # Truncate text to avoid exceeding API limits (e.g., first 15000 chars)
     truncated_text = text_content[:15000]
 
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={GEMINI_API_KEY}"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    # --- [CORRECTED] Define the JSON structure we want back ---
+    # --- [UPDATED] Define the JSON structure including 'status' ---
     response_schema = {
         "type": "OBJECT",
         "properties": {
@@ -119,20 +115,34 @@ def analyze_document_with_gemini(text_content):
             },
             "department": {"type": "STRING"},
             "type": {"type": "STRING"},
-            "tables_data": { # Corrected field name
+            # === NEW: STATUS FIELD ===
+            "status": {
+                "type": "STRING",
+                "enum": ["urgent","approved", "review"]
+            },
+            # =========================
+            "tables_data": { 
                 "type": "ARRAY",
                 "items": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"}
-                    }
+                    "type": "OBJECT", 
+                    "properties": {
+                        "caption": {"type": "STRING"},
+                        "data": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "ARRAY",
+                                "items": {"type": "STRING"}
+                            }
+                        }
+                    },
+                    "required": ["caption", "data"]
                 }
             }
-        }
+        },
+        "required": ["title", "summary", "tags", "department", "type", "status", "tables_data"]
     }
 
-    # --- [CORRECTED] Updated prompt with more instructions ---
+    # --- [UPDATED] Prompt with instructions for status assignment ---
     system_prompt = (
         "You are an expert document analyzer for a large metro rail company (KMRL). "
         "Analyze the provided document text and return ONLY a valid JSON object. "
@@ -141,10 +151,12 @@ def analyze_document_with_gemini(text_content):
         "1. Generate a **detailed summary** of the document, at least 3-4 sentences long. "
         "2. Extract key `tags`. "
         "3. Make an educated guess for the `department` (e.g., 'Operations', 'Engineering', 'Safety'). "
-        "4. Make an educated guess for the `type` (e.g., 'Safety Circular', 'Invoice'). "
-        "5. **Important:** If you detect any tables, extract their data. Each table should be a 2D array of strings. "
-        "   The `tables_data` field should be an array of these 2D arrays. "
-        "   For example: `[[['Header 1', 'Header 2'], ['Cell 1', 'Cell 2']]]`. "
+        "4. Make an educated guess for the `type` (e.g., 'Safety Circular', 'Invoice', 'Tender Document'). "
+        "5. **Assign an initial document `status` based on its content**: "
+        "   - 'urgent': For Incident Reports, Immediate Safety Circulars, or Critical Directives. "
+        "   - 'approved': For routine, finalized documents like published Policies, Board Minutes, or generic Training Materials. "
+        "   - 'review': If the document is unclear, highly sensitive, or the type is unknown, forcing a human check. "
+        "6. If you detect any tables, extract their data. The `tables_data` field MUST be an array of objects, each with a `caption` and `data` (2D array). "
         "   If no tables are found, this field MUST be an empty array `[]`."
     )
 
@@ -166,20 +178,15 @@ def analyze_document_with_gemini(text_content):
         
         result = response.json()
         
-        # Extract the JSON text from the API response
         generated_json_text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
         
-        # Parse the JSON string into a Python dict
         processed_data = json.loads(generated_json_text)
 
-        # --- [NEW] DEBUGGING PRINT ---
-        # This will show us exactly what the AI returned in your terminal
         print("--- GEMINI ANALYSIS RESULT ---")
         print(json.dumps(processed_data, indent=2))
         print("------------------------------")
         
-        # Guess language (simple version)
-        processed_data['language'] = "English" # Default, can be improved
+        processed_data['language'] = "English" # Default
         
         return processed_data
         
@@ -193,7 +200,8 @@ def analyze_document_with_gemini(text_content):
             "department": "Unknown",
             "type": "Unknown",
             "language": "English",
-            "tables_data": [] # Corrected field name
+            "status": "review", # Hardcoded to 'review' only on error
+            "tables_data": []
         }
 
 # -------------------------
@@ -236,15 +244,12 @@ def semantic_search(query, collection, top_k=10):
         score = cosine_similarity(query_vec, doc_vec)
 
         if score > 0:
-            # Use 'similarity' instead of '_score' for frontend compatibility
             doc["similarity"] = score
-            doc["_score"] = score # Keep for backward compatibility
+            doc["_score"] = score
             results.append(doc)
 
-    # Sort by similarity score
     results.sort(key=lambda x: x["similarity"], reverse=True)
 
-    # Convert ObjectId to string for JSON serialization
     for r in results:
         r['_id'] = str(r['_id'])
 
@@ -278,7 +283,6 @@ def get_documents():
             query_filter['department'] = department
         
         if doc_type and doc_type != 'all-types':
-            # Convert 'safety-circular' to 'Safety Circular'
             formatted_type = doc_type.replace('-', ' ').title()
             query_filter['type'] = formatted_type
         
@@ -307,7 +311,7 @@ def get_documents():
         return jsonify({'error': str(e)}), 500
 
 
-# --- UPDATED UPLOAD ROUTE ---
+# --- [UPDATED] UPLOAD ROUTE - Status is now AI-assigned ---
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document():
     try:
@@ -330,17 +334,17 @@ def upload_document():
             
         print(f"Extracted {len(text_content)} characters.")
 
-        # 2. Analyze text with Gemini
+        # 2. Analyze text with Gemini (includes status now)
         print("Analyzing document with Gemini AI...")
         processed_data = analyze_document_with_gemini(text_content)
         print("Analysis complete.")
 
-        # 3. Add remaining data
+        # 3. Add remaining data (status is already in processed_data)
         processed_data['content'] = text_content # Store the full text
         processed_data['date'] = datetime.now()
-        processed_data['status'] = 'review' # Default status
+        # processed_data['status'] = 'review' # <-- REMOVED: Status is now AI-assigned
         processed_data['source'] = 'uploaded'
-        processed_data['starred'] = False # Default starred state
+        processed_data['starred'] = False
         
         # 4. Insert into database
         result = documents_collection.insert_one(processed_data)
@@ -377,7 +381,6 @@ def search_semantic_route():
 
         results = semantic_search(query, documents_collection)
         
-        # Note: semantic_search function now handles _id conversion
         return jsonify({'results': results})
     except Exception as e:
         print(f"Error in semantic search: {str(e)}")
@@ -454,6 +457,6 @@ def health_check():
 
 if __name__ == '__main__':
     if not GEMINI_API_KEY:
-        print("Warning: GEMINI_API_KEY environment variable is not set.")
+        print("🚨 Warning: GEMINI_API_KEY environment variable is not set.")
         print("AI features will be disabled, and mock data will be used.")
     app.run(debug=True, port=5000)
